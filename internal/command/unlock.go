@@ -28,6 +28,7 @@ func (c *UnlockCommand) Run(args []string) int {
 	args = c.Meta.process(args)
 	var force bool
 	cmdFlags := c.Meta.defaultFlagSet("force-unlock")
+	c.Meta.varFlagSet(cmdFlags)
 	cmdFlags.BoolVar(&force, "force", false, "force")
 	cmdFlags.Usage = func() { c.Ui.Error(c.Help()) }
 	if err := cmdFlags.Parse(args); err != nil {
@@ -52,6 +53,13 @@ func (c *UnlockCommand) Run(args []string) int {
 		return 1
 	}
 
+	// Load the encryption configuration
+	enc, encDiags := c.EncryptionFromPath(configPath)
+	if encDiags.HasErrors() {
+		c.showDiagnostics(encDiags)
+		return 1
+	}
+
 	var diags tfdiags.Diagnostics
 
 	backendConfig, backendDiags := c.loadBackendConfig(configPath)
@@ -64,7 +72,7 @@ func (c *UnlockCommand) Run(args []string) int {
 	// Load the backend
 	b, backendDiags := c.Backend(&BackendOpts{
 		Config: backendConfig,
-	}, nil) // Should not be needed for an unlock
+	}, enc.State())
 	diags = diags.Append(backendDiags)
 	if backendDiags.HasErrors() {
 		c.showDiagnostics(diags)

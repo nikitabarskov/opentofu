@@ -9,6 +9,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -109,7 +110,7 @@ func TestDirFromModule_registry(t *testing.T) {
 
 	// Make sure the configuration is loadable now.
 	// (This ensures that correct information is recorded in the manifest.)
-	config, loadDiags := loader.LoadConfig(".")
+	config, loadDiags := loader.LoadConfig(".", configs.RootModuleCallForTesting())
 	if assertNoDiagnostics(t, tfdiags.Diagnostics{}.Append(loadDiags)) {
 		return
 	}
@@ -191,7 +192,7 @@ func TestDirFromModule_submodules(t *testing.T) {
 
 	// Make sure the configuration is loadable now.
 	// (This ensures that correct information is recorded in the manifest.)
-	config, loadDiags := loader.LoadConfig(".")
+	config, loadDiags := loader.LoadConfig(".", configs.RootModuleCallForTesting())
 	if assertNoDiagnostics(t, tfdiags.Diagnostics{}.Append(loadDiags)) {
 		return
 	}
@@ -281,6 +282,11 @@ func TestDirFromModule_rel_submodules(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		os.Chdir(oldDir)
+		// Trigger garbage collection to ensure that all open file handles are closed.
+		// This prevents TempDir RemoveAll cleanup errors on Windows.
+		if runtime.GOOS == "windows" {
+			runtime.GC()
+		}
 	})
 
 	hooks := &testInstallHooks{}
@@ -317,7 +323,7 @@ func TestDirFromModule_rel_submodules(t *testing.T) {
 
 	// Make sure the configuration is loadable now.
 	// (This ensures that correct information is recorded in the manifest.)
-	config, loadDiags := loader.LoadConfig(".")
+	config, loadDiags := loader.LoadConfig(".", configs.RootModuleCallForTesting())
 	if assertNoDiagnostics(t, tfdiags.Diagnostics{}.Append(loadDiags)) {
 		return
 	}

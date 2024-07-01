@@ -15,7 +15,7 @@ import (
 )
 
 func TestMultipleRunBlocks(t *testing.T) {
-	timeout := time.After(3 * time.Second)
+	timeout := time.After(5 * time.Second)
 	type testResult struct {
 		stdout string
 		stderr string
@@ -49,5 +49,34 @@ func TestMultipleRunBlocks(t *testing.T) {
 		if !strings.Contains(result.stdout, "30 passed") {
 			t.Errorf("success message is missing from output:\n%s", result.stdout)
 		}
+	}
+}
+
+func TestOverrides(t *testing.T) {
+	// This test fetches "local" and "random" providers.
+	skipIfCannotAccessNetwork(t)
+
+	tf := e2e.NewBinary(t, tofuBin, filepath.Join("testdata", "overrides-in-tests"))
+
+	stdout, stderr, err := tf.Run("init")
+	if err != nil {
+		t.Errorf("unexpected error on 'init': %v", err)
+	}
+	if stderr != "" {
+		t.Errorf("unexpected stderr output on 'init':\n%s", stderr)
+	}
+	if stdout == "" {
+		t.Errorf("expected some output on 'init', got nothing")
+	}
+
+	stdout, stderr, err = tf.Run("test")
+	if err != nil {
+		t.Errorf("unexpected error on 'test': %v", err)
+	}
+	if stderr != "" {
+		t.Errorf("unexpected stderr output on 'test':\n%s", stderr)
+	}
+	if !strings.Contains(stdout, "11 passed, 0 failed") {
+		t.Errorf("output doesn't have expected success string:\n%s", stdout)
 	}
 }

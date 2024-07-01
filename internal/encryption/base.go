@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/opentofu/opentofu/internal/configs"
 	"github.com/opentofu/opentofu/internal/encryption/config"
 	"github.com/opentofu/opentofu/internal/encryption/keyprovider"
 	"github.com/opentofu/opentofu/internal/encryption/method"
@@ -28,15 +29,17 @@ type baseEncryption struct {
 	name       string
 	encMethods []method.Method
 	encMeta    map[keyprovider.Addr][]byte
+	staticEval *configs.StaticEvaluator
 }
 
-func newBaseEncryption(enc *encryption, target *config.TargetConfig, enforced bool, name string) (*baseEncryption, hcl.Diagnostics) {
+func newBaseEncryption(enc *encryption, target *config.TargetConfig, enforced bool, name string, staticEval *configs.StaticEvaluator) (*baseEncryption, hcl.Diagnostics) {
 	base := &baseEncryption{
-		enc:      enc,
-		target:   target,
-		enforced: enforced,
-		name:     name,
-		encMeta:  make(map[keyprovider.Addr][]byte),
+		enc:        enc,
+		target:     target,
+		enforced:   enforced,
+		name:       name,
+		encMeta:    make(map[keyprovider.Addr][]byte),
+		staticEval: staticEval,
 	}
 	// Setup the encryptor
 	//
@@ -95,10 +98,6 @@ func (s *baseEncryption) encrypt(data []byte, enhance func(basedata) interface{}
 	encryptor := s.encMethods[0]
 
 	if unencrypted.Is(encryptor) {
-		// ensure that the method is defined when Enforced is true
-		if s.enforced {
-			return nil, fmt.Errorf("unable to use unencrypted method for %q when enforced = true", s.name)
-		}
 		return data, nil
 	}
 
@@ -143,9 +142,6 @@ func (s *baseEncryption) decrypt(data []byte, validator func([]byte) error) ([]b
 		// Yep, it's already decrypted
 		for _, method := range s.encMethods {
 			if unencrypted.Is(method) {
-				if s.enforced {
-					return nil, fmt.Errorf("unable to use unencrypted method when enforced = true")
-				}
 				return data, nil
 			}
 		}

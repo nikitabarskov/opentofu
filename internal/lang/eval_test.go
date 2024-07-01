@@ -8,6 +8,7 @@ package lang
 import (
 	"bytes"
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/opentofu/opentofu/internal/addrs"
@@ -19,6 +20,7 @@ import (
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 
 	"github.com/zclconf/go-cty/cty"
+	"github.com/zclconf/go-cty/cty/function"
 	ctyjson "github.com/zclconf/go-cty/cty/json"
 )
 
@@ -419,6 +421,76 @@ func TestScopeEvalContext(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestScopeEvalContextWithParent tests if the resulting EvalCtx has correct parent.
+func TestScopeEvalContextWithParent(t *testing.T) {
+	t.Run("with-parent", func(t *testing.T) {
+		barStr, barFunc := cty.StringVal("bar"), function.New(&function.Spec{
+			Impl: func(_ []cty.Value, _ cty.Type) (cty.Value, error) {
+				return cty.NilVal, nil
+			},
+		})
+
+		scope, parent := &Scope{}, &hcl.EvalContext{
+			Variables: map[string]cty.Value{
+				"foo": barStr,
+			},
+			Functions: map[string]function.Function{
+				"foo": barFunc,
+			},
+		}
+
+		child, diags := scope.EvalContextWithParent(parent, nil)
+		if len(diags) != 0 {
+			t.Errorf("Unexpected diagnostics:")
+			for _, diag := range diags {
+				t.Errorf("- %s", diag)
+			}
+			return
+		}
+
+		if child.Parent() == nil {
+			t.Fatalf("Child EvalCtx has no parent")
+		}
+
+		if child.Parent() != parent {
+			t.Fatalf("Child EvalCtx has different parent:\n GOT:%v\nWANT:%v", child.Parent(), parent)
+		}
+
+		if ln := len(child.Parent().Variables); ln != 1 {
+			t.Fatalf("EvalContextWithParent modified parent's variables: incorrent length: %d", ln)
+		}
+
+		if v := child.Parent().Variables["foo"]; !v.RawEquals(barStr) {
+			t.Fatalf("EvalContextWithParent modified parent's variables:\n GOT:%v\nWANT:%v", v, barStr)
+		}
+
+		if ln := len(child.Parent().Functions); ln != 1 {
+			t.Fatalf("EvalContextWithParent modified parent's functions: incorrent length: %d", ln)
+		}
+
+		if v := child.Parent().Functions["foo"]; !reflect.DeepEqual(v, barFunc) {
+			t.Fatalf("EvalContextWithParent modified parent's functions:\n GOT:%v\nWANT:%v", v, barFunc)
+		}
+	})
+
+	t.Run("zero-parent", func(t *testing.T) {
+		scope := &Scope{}
+
+		root, diags := scope.EvalContextWithParent(nil, nil)
+		if len(diags) != 0 {
+			t.Errorf("Unexpected diagnostics:")
+			for _, diag := range diags {
+				t.Errorf("- %s", diag)
+			}
+			return
+		}
+
+		if root.Parent() != nil {
+			t.Fatalf("Resulting EvalCtx has unexpected parent: %v", root.Parent())
+		}
+	})
 }
 
 func TestScopeExpandEvalBlock(t *testing.T) {
@@ -874,26 +946,14 @@ func Test_enhanceFunctionDiags(t *testing.T) {
 		{
 			"Invalid prefix",
 			"attr = magic::missing_function(54)",
+			"Unknown function namespace",
+			"Function \"magic::missing_function\" does not exist within a valid namespace (provider,core)",
+		},
+		{
+			"Too many namespaces",
+			"attr = provider::foo::bar::extra::extra2::missing_function(54)",
 			"Invalid function format",
-			"Expected provider::<provider_name>::<function_name>, instead found \"magic::missing_function\"",
-		},
-		{
-			"Broken prefix",
-			"attr = magic::foo::bar::extra::missing_function(54)",
-			"Invalid function format",
-			"Expected provider::<provider_name>::<function_name>, instead found \"magic::foo::bar::extra::missing_function\"",
-		},
-		{
-			"Missing provider",
-			"attr = provider::unknown::func(54)",
-			"Unknown function provider",
-			"Provider \"unknown\" does not exist within the required_providers of this module",
-		},
-		{
-			"Missing function",
-			"attr = provider::known::func(54)",
-			"Function not found in provider",
-			"Function \"func\" was not registered by provider named \"known\" of type \"hostname/namespace/type\"",
+			"invalid provider function \"provider::foo::bar::extra::extra2::missing_function\": expected provider::<name>::<function> or provider::<name>::<alias>::<function>",
 		},
 	}
 
@@ -919,15 +979,7 @@ func Test_enhanceFunctionDiags(t *testing.T) {
 
 			body := file.Body
 
-			scope := &Scope{
-				ProviderNames: map[string]addrs.Provider{
-					"known": addrs.Provider{
-						Type:      "type",
-						Namespace: "namespace",
-						Hostname:  "hostname",
-					},
-				},
-			}
+			scope := &Scope{}
 
 			ctx, ctxDiags := scope.EvalContext(nil)
 			if ctxDiags.HasErrors() {

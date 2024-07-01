@@ -13,6 +13,9 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
+	"github.com/zclconf/go-cty/cty"
+	"github.com/zclconf/go-cty/cty/function"
+
 	"github.com/opentofu/opentofu/internal/addrs"
 	"github.com/opentofu/opentofu/internal/checks"
 	"github.com/opentofu/opentofu/internal/configs/configschema"
@@ -27,7 +30,6 @@ import (
 	"github.com/opentofu/opentofu/internal/states"
 	"github.com/opentofu/opentofu/internal/tfdiags"
 	"github.com/opentofu/opentofu/version"
-	"github.com/zclconf/go-cty/cty"
 )
 
 // BuiltinEvalContext is an EvalContext implementation that is used by
@@ -50,28 +52,29 @@ type BuiltinEvalContext struct {
 	// eval context.
 	Evaluator *Evaluator
 
+	VariableValuesLock *sync.Mutex
 	// VariableValues contains the variable values across all modules. This
 	// structure is shared across the entire containing context, and so it
 	// may be accessed only when holding VariableValuesLock.
 	// The keys of the first level of VariableValues are the string
 	// representations of addrs.ModuleInstance values. The second-level keys
 	// are variable names within each module instance.
-	VariableValues     map[string]map[string]cty.Value
-	VariableValuesLock *sync.Mutex
+	VariableValues map[string]map[string]cty.Value
 
 	// Plugins is a library of plugin components (providers and provisioners)
 	// available for use during a graph walk.
 	Plugins *contextPlugins
 
-	Hooks                 []Hook
-	InputValue            UIInput
-	ProviderCache         map[string]providers.Interface
-	ProviderInputConfig   map[string]map[string]cty.Value
-	ProviderLock          *sync.Mutex
-	ProvisionerCache      map[string]provisioners.Interface
-	ProvisionerLock       *sync.Mutex
-	FunctionCache         *ProviderFunctions
-	FunctionLock          sync.Mutex
+	Hooks      []Hook
+	InputValue UIInput
+
+	ProviderLock        *sync.Mutex
+	ProviderCache       map[string]providers.Interface
+	ProviderInputConfig map[string]map[string]cty.Value
+
+	ProvisionerLock  *sync.Mutex
+	ProvisionerCache map[string]provisioners.Interface
+
 	ChangesValue          *plans.ChangesSync
 	StateValue            *states.SyncState
 	ChecksValue           *checks.State
@@ -90,8 +93,6 @@ func (ctx *BuiltinEvalContext) WithPath(path addrs.ModuleInstance) EvalContext {
 	newCtx := *ctx
 	newCtx.pathSet = true
 	newCtx.PathValue = path
-	newCtx.FunctionCache = nil
-	newCtx.FunctionLock = sync.Mutex{}
 	return &newCtx
 }
 
@@ -129,17 +130,15 @@ func (ctx *BuiltinEvalContext) Input() UIInput {
 }
 
 func (ctx *BuiltinEvalContext) InitProvider(addr addrs.AbsProviderConfig) (providers.Interface, error) {
-	// If we already initialized, it is an error
-	if p := ctx.Provider(addr); p != nil {
-		return nil, fmt.Errorf("%s is already initialized", addr)
-	}
-
-	// Warning: make sure to acquire these locks AFTER the call to Provider
-	// above, since it also acquires locks.
 	ctx.ProviderLock.Lock()
 	defer ctx.ProviderLock.Unlock()
 
 	key := addr.String()
+
+	// If we have already initialized, it is an error
+	if _, ok := ctx.ProviderCache[key]; ok {
+		return nil, fmt.Errorf("%s is already initialized", addr)
+	}
 
 	p, err := ctx.Plugins.NewProviderInstance(addr.Provider)
 	if err != nil {
@@ -526,20 +525,9 @@ func (ctx *BuiltinEvalContext) EvaluationScope(self addrs.Referenceable, source 
 		return ctx.Evaluator.Scope(data, self, source, nil)
 	}
 
-	ctx.FunctionLock.Lock()
-	defer ctx.FunctionLock.Unlock()
-	if ctx.FunctionCache == nil {
-		names := make(map[string]addrs.Provider)
-
-		// Providers must exist within required_providers to register their functions
-		for name, provider := range mc.Module.ProviderRequirements.RequiredProviders {
-			// Functions are only registered under their name, not their type name
-			names[name] = provider.Type
-		}
-
-		ctx.FunctionCache = ctx.Plugins.Functions(names)
-	}
-	scope := ctx.Evaluator.Scope(data, self, source, ctx.FunctionCache)
+	scope := ctx.Evaluator.Scope(data, self, source, func(pf addrs.ProviderFunction, rng tfdiags.SourceRange) (*function.Function, tfdiags.Diagnostics) {
+		return evalContextProviderFunction(ctx.Provider, mc, ctx.Evaluator.Operation, pf, rng)
+	})
 	scope.SetActiveExperiments(mc.Module.ActiveExperiments)
 
 	return scope

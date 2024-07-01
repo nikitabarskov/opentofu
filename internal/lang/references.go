@@ -72,7 +72,9 @@ func ReferencesInBlock(parseRef ParseRef, body hcl.Body, schema *configschema.Bl
 	// in a better position to test this due to having mock providers etc
 	// available.
 	traversals := blocktoattr.ExpandedVariables(body, schema)
-	return References(parseRef, traversals)
+	funcs := filterProviderFunctions(blocktoattr.ExpandedFunctions(body, schema))
+
+	return References(parseRef, append(traversals, funcs...))
 }
 
 // ReferencesInExpr is a helper wrapper around References that first searches
@@ -83,5 +85,38 @@ func ReferencesInExpr(parseRef ParseRef, expr hcl.Expression) ([]*addrs.Referenc
 		return nil, nil
 	}
 	traversals := expr.Variables()
+	if fexpr, ok := expr.(hcl.ExpressionWithFunctions); ok {
+		funcs := filterProviderFunctions(fexpr.Functions())
+		traversals = append(traversals, funcs...)
+	}
 	return References(parseRef, traversals)
+}
+
+// ProviderFunctionsInExpr is a helper wrapper around References that searches for provider
+// function traversals in an ExpressionWithFunctions, then converts the traversals into
+// references
+func ProviderFunctionsInExpr(parseRef ParseRef, expr hcl.Expression) ([]*addrs.Reference, tfdiags.Diagnostics) {
+	if expr == nil {
+		return nil, nil
+	}
+	if fexpr, ok := expr.(hcl.ExpressionWithFunctions); ok {
+		funcs := filterProviderFunctions(fexpr.Functions())
+		return References(parseRef, funcs)
+	}
+	return nil, nil
+}
+
+func filterProviderFunctions(funcs []hcl.Traversal) []hcl.Traversal {
+	pfuncs := make([]hcl.Traversal, 0, len(funcs))
+	for _, fn := range funcs {
+		if len(fn) == 0 {
+			continue
+		}
+		if root, ok := fn[0].(hcl.TraverseRoot); ok {
+			if addrs.ParseFunction(root.Name).IsNamespace(addrs.FunctionNamespaceProvider) {
+				pfuncs = append(pfuncs, fn)
+			}
+		}
+	}
+	return pfuncs
 }
